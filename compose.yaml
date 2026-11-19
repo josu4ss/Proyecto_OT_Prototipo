@@ -1,0 +1,121 @@
+name: puente-it-ot
+services:
+  certgen:
+    profiles: [setup]
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile.certgen
+    working_dir: /project
+    volumes:
+      - ./:/project
+    command: ["python", "scripts/bootstrap.py"]
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: otapp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: otlab
+    volumes: [db_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U otapp -d otlab"]
+      interval: 4s
+      timeout: 3s
+      retries: 15
+    networks: [it]
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    restart: unless-stopped
+    command: ["mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
+    volumes:
+      - ./broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./broker/acl:/mosquitto/config/acl:ro
+      - ./certs:/mosquitto/certs:ro
+    networks: [message, ot]
+  plc:
+    build: ./ot
+    restart: unless-stopped
+    command: ["python", "plc.py"]
+    environment:
+      OPCUA_PASSWORD: ${OPCUA_PASSWORD}
+    volumes:
+      - ./certs:/certs:ro
+    networks: [ot]
+  gateway:
+    build: ./ot
+    restart: unless-stopped
+    depends_on: [plc, mosquitto]
+    command: ["python", "gateway.py"]
+    environment:
+      OPCUA_PASSWORD: ${OPCUA_PASSWORD}
+    volumes:
+      - ./certs:/certs:ro
+      - gateway_data:/data
+    networks: [ot]
+  api:
+    build: ./api
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      mosquitto: {condition: service_started}
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgres://otapp:${POSTGRES_PASSWORD}@postgres:5432/otlab
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      VIEWER_EMAIL: ${VIEWER_EMAIL}
+      VIEWER_PASSWORD: ${VIEWER_PASSWORD}
+      MQTT_HOST: mosquitto
+      NODE_ENV: production
+    volumes:
+      - ./certs:/certs:ro
+    networks: [it, message]
+  web:
+    build: ./web
+    restart: unless-stopped
+    depends_on: [api]
+    ports:
+      - "127.0.0.1:8443:443"
+    volumes:
+      - ./certs:/etc/otlab-certs:ro
+    networks: [it, frontend]
+  tester:
+    profiles: [test]
+    image: python:3.12-alpine
+    depends_on: [mosquitto]
+    command: ["python", "/tests/security_smoke.py"]
+    volumes:
+      - ./certs:/certs:ro
+      - ./tests:/tests:ro
+    networks: [message]
+  gateway-tester:
+    profiles: [test]
+    build: ./ot
+    command: ["python", "/tests/test_gateway_security.py"]
+    volumes:
+      - ./certs:/certs:ro
+      - ./tests:/tests:ro
+    networks: [ot]
+  fuxa:
+    profiles: [scada]
+    image: frangoteam/fuxa:latest
+    restart: unless-stopped
+    ports: ["127.0.0.1:1881:1881"]
+    volumes:
+      - fuxa_appdata:/usr/src/app/FUXA/server/_appdata
+      - fuxa_db:/usr/src/app/FUXA/server/_db
+    networks: [it]
+networks:
+  it:
+    internal: true
+  message:
+    internal: true
+  ot:
+    internal: true
+  frontend:
+    driver: bridge
+volumes:
+  db_data:
+  gateway_data:
+  fuxa_appdata:
+  fuxa_db:

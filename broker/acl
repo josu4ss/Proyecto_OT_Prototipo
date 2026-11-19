@@ -1,0 +1,9 @@
+user backend
+topic write laboratorio/plc01/comando
+topic read laboratorio/plc01/estado
+topic read laboratorio/plc01/resultado
+
+user gateway-plc01
+topic read laboratorio/plc01/comando
+topic write laboratorio/plc01/estado
+topic write laboratorio/plc01/resultado
